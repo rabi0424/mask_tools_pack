@@ -21,6 +21,7 @@ class CropByMaskExpanded:
       MASK①: 元画像サイズ（H×W）の矩形マスク
       MASK②: くり抜き画像サイズ（h×w）の選択領域マスク
     - 制約: 現状 B=1 のみ対応
+    - サイズと位置はすべて8の倍数
     """
 
     @classmethod
@@ -66,7 +67,6 @@ class CropByMaskExpanded:
         msk = mask[0]    # [H,W]
 
         # 外接矩形のための2値化（bbox_thresholdより大きい画素を選択）
-        import torch
         sel = msk > bbox_threshold
 
         if torch.any(sel):
@@ -89,27 +89,95 @@ class CropByMaskExpanded:
         new_w = int(math.ceil(orig_w * scale))
         new_h = int(math.ceil(orig_h * scale))
 
+        # 8の倍数に切り上げ
+        new_w = ((new_w + 7) // 8) * 8
+        new_h = ((new_h + 7) // 8) * 8
+
         # 中心座標
         cx = (x_min + x_max) / 2.0
         cy = (y_min + y_max) / 2.0
 
-        # 左上・右下（整数丸め）
-        left0 = int(round(cx - new_w / 2.0))
-        top0 = int(round(cy - new_h / 2.0))
+        # 左上・右下（8の倍数を保つため、leftとtopを8の倍数に丸める）
+        left0 = int(cx - new_w / 2.0)
+        top0 = int(cy - new_h / 2.0)
+        
+        # 8の倍数に調整（floor to nearest multiple of 8）
+        left0 = (left0 // 8) * 8
+        top0 = (top0 // 8) * 8
+        
         right0 = left0 + new_w - 1
         bottom0 = top0 + new_h - 1
 
         # 画像端で止める（はみ出す辺だけ）
-        left = max(0, left0)
-        top = max(0, top0)
-        right = min(W - 1, right0)
-        bottom = min(H - 1, bottom0)
+        # はみ出す場合も8の倍数を維持
+        if left0 < 0:
+            left = 0
+            right = min(W - 1, new_w - 1)
+            # 幅を8の倍数に調整
+            actual_w = right - left + 1
+            actual_w = ((actual_w + 7) // 8) * 8
+            right = min(W - 1, left + actual_w - 1)
+        elif right0 >= W:
+            right = W - 1
+            left = max(0, right - new_w + 1)
+            # leftを8の倍数に調整
+            left = (left // 8) * 8
+            # 幅を8の倍数に調整
+            actual_w = right - left + 1
+            actual_w = ((actual_w + 7) // 8) * 8
+            left = max(0, right - actual_w + 1)
+        else:
+            left = left0
+            right = right0
 
-        # 最低1ピクセルは確保
+        if top0 < 0:
+            top = 0
+            bottom = min(H - 1, new_h - 1)
+            # 高さを8の倍数に調整
+            actual_h = bottom - top + 1
+            actual_h = ((actual_h + 7) // 8) * 8
+            bottom = min(H - 1, top + actual_h - 1)
+        elif bottom0 >= H:
+            bottom = H - 1
+            top = max(0, bottom - new_h + 1)
+            # topを8の倍数に調整
+            top = (top // 8) * 8
+            # 高さを8の倍数に調整
+            actual_h = bottom - top + 1
+            actual_h = ((actual_h + 7) // 8) * 8
+            top = max(0, bottom - actual_h + 1)
+        else:
+            top = top0
+            bottom = bottom0
+
+        # 最終的な幅と高さが8の倍数であることを確認
+        final_w = right - left + 1
+        final_h = bottom - top + 1
+        
+        # 念のため再調整（画像境界内で8の倍数を保証）
+        if final_w % 8 != 0:
+            target_w = ((final_w + 7) // 8) * 8
+            if left + target_w - 1 < W:
+                right = left + target_w - 1
+            else:
+                right = W - 1
+                left = max(0, ((right - target_w + 1) // 8) * 8)
+        
+        if final_h % 8 != 0:
+            target_h = ((final_h + 7) // 8) * 8
+            if top + target_h - 1 < H:
+                bottom = top + target_h - 1
+            else:
+                bottom = H - 1
+                top = max(0, ((bottom - target_h + 1) // 8) * 8)
+
+        # 最低8ピクセルは確保
         if right < left:
-            left, right = 0, max(0, min(W - 1, new_w - 1))
+            left = 0
+            right = min(W - 1, 7)
         if bottom < top:
-            top, bottom = 0, max(0, min(H - 1, new_h - 1))
+            top = 0
+            bottom = min(H - 1, 7)
 
         # 画像の切り抜き（マスクは適用しない）
         crop_img = img[top:bottom + 1, left:right + 1, :]
